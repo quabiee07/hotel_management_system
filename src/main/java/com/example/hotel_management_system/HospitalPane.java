@@ -30,7 +30,7 @@ public class HospitalPane extends Application {
     private final Label statusLabel = new Label();
     Alert success = new Alert(Alert.AlertType.INFORMATION);
     // ObservableList to hold patient data
-    private ObservableList<Patient> patients = FXCollections.observableArrayList();
+    private final ObservableList<Patient> patients = FXCollections.observableArrayList();
 
     // TableView for displaying patients
     private TableView<Patient> tableView;
@@ -81,21 +81,7 @@ public class HospitalPane extends Application {
         fields.setHgrow(Priority.ALWAYS);
 
         form.getColumnConstraints().addAll(labels, fields);
-        Button addButton = new Button("Add");
-        addButton.setDefaultButton(true);
-        addButton.setOnAction(e -> registerPatient());
-        Button updateButton = new Button("Update");
-        updateButton.setOnAction(e -> {
-        });
-        Button deleteButton = new Button("Delete");
-        deleteButton.setOnAction(e -> {
-        });
-        Button clearButton = new Button("Clear");
-        clearButton.setOnAction(e -> clearForm());
-
-
-        HBox buttons = new HBox(10, addButton, updateButton, deleteButton, clearButton);
-        buttons.setAlignment(Pos.CENTER_RIGHT);
+        HBox buttons = getButtons();
 
         VBox content = new VBox(12, form, buttons, statusLabel);
         HBox hBox = new HBox(50, content, tableView);
@@ -105,8 +91,25 @@ public class HospitalPane extends Application {
 
 
         stage.setTitle("Hospital Management System");
-        stage.setScene(new Scene(root, 1000, 550));
+        stage.setScene(new Scene(root, 1200, 550));
         stage.show();
+    }
+
+    private HBox getButtons() {
+        Button addButton = new Button("Add");
+        addButton.setDefaultButton(true);
+        addButton.setOnAction(_ -> registerPatient());
+        Button updateButton = new Button("Update");
+        updateButton.setOnAction(_ -> updateSelectedPatient());
+//        Button deleteButton = new Button("Delete");
+//        deleteButton.setOnAction(e -> deleteSelectedPatient());
+        Button clearButton = new Button("Clear");
+        clearButton.setOnAction(_ -> clearForm());
+
+
+        HBox buttons = new HBox(10, addButton, updateButton, clearButton);
+        buttons.setAlignment(Pos.CENTER_RIGHT);
+        return buttons;
     }
 
     private void addRow(GridPane grid, int row, String text, Control control) {
@@ -145,9 +148,34 @@ public class HospitalPane extends Application {
         phoneColumn.setMinWidth(100);
         admissionDateColumn.setMinWidth(100);
 
-        tableView.getColumns().addAll(nameColumn, ageColumn, phoneColumn, diagnosisColumn, admissionDateColumn);
+        TableColumn<Patient, Void> actionsColumn = createActionsColumn();
+
+        tableView.getColumns().addAll(nameColumn, ageColumn, phoneColumn, diagnosisColumn, admissionDateColumn, actionsColumn);
         tableView.setItems(patients);
-        tableView.setMaxWidth(Double.MAX_VALUE);
+        tableView.setMaxWidth(1000);
+    }
+
+    private TableColumn<Patient, Void> createActionsColumn() {
+        TableColumn<Patient, Void> actionsColumn = new TableColumn<>("Actions");
+        actionsColumn.setCellFactory(column -> new TableCell<>() {
+            private final Button editButton = new Button("Edit");
+            private final Button deleteButton = new Button("Delete");
+            private final HBox buttons = new HBox(8, editButton, deleteButton);
+
+            {
+                editButton.setStyle("-fx-background-color: #8da6ff;");
+                deleteButton.setStyle("-fx-background-color: #ff8d8d;");
+                editButton.setOnAction(event -> loadPatientIntoForm(getTableView().getItems().get(getIndex())));
+                deleteButton.setOnAction(event -> deletePatient(getTableView().getItems().get(getIndex())));
+            }
+
+            @Override
+            protected void updateItem(Void item, boolean empty) {
+                super.updateItem(item, empty);
+                setGraphic(empty ? null : buttons);
+            }
+        });
+        return actionsColumn;
     }
 
     private void fetchPatients() {
@@ -158,11 +186,86 @@ public class HospitalPane extends Application {
         }
     }
 
+    private void loadPatientIntoForm(Patient patient) {
+        tableView.getSelectionModel().select(patient);
+        nameField.setText(patient.name());
+        ageField.setText(String.valueOf(patient.age()));
+        genderBox.setValue(patient.gender());
+        phoneField.setText(patient.phone());
+        diagnosisField.setText(patient.diagnosis());
+        admissionDatePicker.setValue(patient.admissionDate());
+        setStatus("Editing " + patient.name() + ". Make changes and click Update.", false);
+    }
+
+    private void deleteSelectedPatient() {
+        Patient selected = tableView.getSelectionModel().getSelectedItem();
+        if (selected == null) {
+            setStatus("Select a patient or use a row's Delete button.", true);
+            return;
+        }
+        deletePatient(selected);
+    }
+
+    private void deletePatient(Patient patient) {
+        Alert confirmation = new Alert(Alert.AlertType.CONFIRMATION,
+                "Delete " + patient.name() + "?", ButtonType.CANCEL, ButtonType.OK);
+        confirmation.setHeaderText("Delete patient");
+        if (confirmation.showAndWait().orElse(ButtonType.CANCEL) != ButtonType.OK) return;
+        try {
+            databaseService.deletePatient(patient);
+            patients.remove(patient);
+            clearFields();
+            setStatus("Patient deleted.", false);
+        } catch (SQLException ex) {
+            setStatus("Could not delete patient: " + ex.getMessage(), true);
+        }
+    }
+
+    private void updateSelectedPatient() {
+        Patient selected = tableView.getSelectionModel().getSelectedItem();
+        if (selected == null) {
+            setStatus("Choose Edit on a row before updating it.", true);
+            return;
+        }
+        String name = nameField.getText().trim();
+        String diagnosis = diagnosisField.getText().trim();
+        String phone = phoneField.getText().trim();
+        String gender = genderBox.getValue();
+        LocalDate admissionDate = admissionDatePicker.getValue();
+        int age;
+        try {
+            age = Integer.parseInt(ageField.getText().trim());
+        } catch (NumberFormatException ex) {
+            setStatus("Age must be a whole number.", true);
+            return;
+        }
+        if (name.isEmpty() || diagnosis.isEmpty() || phone.isEmpty() || gender == null || admissionDate == null) {
+            setStatus("Please complete all fields.", true);
+            return;
+        }
+        if (age < 16 || age > 100 || !phone.matches("^[0-9]{10}$")) {
+            setStatus("Enter an age from 16 to 100 and a valid 10-digit phone number.", true);
+            return;
+        }
+        Patient updated = new Patient(selected.patient_id(), name, age, gender, phone, diagnosis, admissionDate);
+        try {
+            if (databaseService.updatePatient(updated)) {
+                fetchPatients();
+                clearFields();
+                setStatus("Patient updated.", false);
+            } else {
+                setStatus("Patient was not found; no changes were saved.", true);
+            }
+        } catch (SQLException ex) {
+            setStatus("Could not update patient: " + ex.getMessage(), true);
+        }
+    }
+
     private void registerPatient() {
 
         int age, ageData;
         ageData = Integer.parseInt(ageField.getText().trim());
-        Patient patient = new Patient(nameField.getText().trim(), ageData, genderBox.getValue(), phoneField.getText().trim(), diagnosisField.getText().trim(), admissionDatePicker.getValue());
+        Patient patient = new Patient(0, nameField.getText().trim(), ageData, genderBox.getValue(), phoneField.getText().trim(), diagnosisField.getText().trim(), admissionDatePicker.getValue());
         String name = patient.name();
         String ageValue = String.valueOf(patient.age());
         String gender = patient.gender();
